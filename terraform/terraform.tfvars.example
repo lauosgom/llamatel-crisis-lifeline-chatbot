@@ -1,0 +1,16 @@
+# Copy this to terraform.tfvars and fill in your own values.
+# terraform.tfvars is gitignored by convention - don't commit real project IDs
+# if this repo is public, though project_id alone isn't sensitive.
+
+project_id = "your-gcp-project-id"
+
+# Optional overrides - defaults shown:
+# region            = "us-central1"
+# zone              = "us-central1-a"
+# bq_location       = "US"
+# dataset_id        = "faq_bot"
+# table_id          = "faq_embeddings"
+# vm_name           = "whatsapp-faq-bot"
+# machine_type      = "e2-micro"
+# boot_disk_size_gb = 20
+# data_disk_size_gb = 10

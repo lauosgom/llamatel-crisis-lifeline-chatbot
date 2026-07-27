@@ -1,0 +1,16 @@
+[Unit]
+Description=WhatsApp FAQ RAG bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/whatsapp-faq-bot
+EnvironmentFile=/opt/whatsapp-faq-bot/.env
+ExecStart=/opt/whatsapp-faq-bot/venv/bin/python whatsapp_bot.py
+Restart=on-failure
+RestartSec=5
+User=bot
+
+[Install]
+WantedBy=multi-user.target
