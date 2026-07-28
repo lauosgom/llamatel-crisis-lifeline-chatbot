@@ -1,8 +1,25 @@
-# WhatsApp FAQ Bot (RAG on BigQuery)
+# Crisis lifeline calls WhatsApp FAQ Bot (RAG on BigQuery)
 
-Answers frequently asked questions in a WhatsApp group using retrieval-augmented
-generation over your own FAQ document, with the vector store hosted in
-Google BigQuery.
+## Project Overview
+
+This project Answers frequently asked questions in a WhatsApp group using retrieval-augmented generation over your own FAQ document, with the vector store hosted in Google BigQuery.
+
+## Problem Statement
+
+The Telefono de la Esperanza (Phone of Hope) is a non-governmental organization dedicated to mental health. One of its main services is a crisis helpline where people can call for psychological support or simply to be listened to. All calls are answered by an expert who listens and offers advice on next steps. In addition to the crisis hotline, the organization aims to build a community where people can receive help, enroll in educational programs to become volunteers and help others, and take courses to learn how to better understand themselves and others.
+
+In Colombia, WhatsApp is the main communication service, and Telefono de la Esperanza uses it not only to provide psychological guidance but also to publicize current and future courses offered by the organization. People ask the same questions all the time, but the group administrators are sometimes unavailable to answer them. The goal of this project is to create a chatbot for a WhatsApp group that can answer questions based on an FAQ document created by the organization's leaders from past questions and existing documentation.
+
+More information about Telefono de la Esperanza here https://telefonodelaesperanza.org/
+
+## Architecture and Technologies
+
+- **Cloud Platform**: Google Cloud Platform (GCP)
+- **Infrastructure as Code**: Terraform
+- **Data Warehouse**: BigQuery
+- **UI**: Whatsapp through Neonize
+
+## Project Architecture
 
 ## How it works
 
@@ -17,12 +34,9 @@ WhatsApp group message (via Neonize)
   -> reply sent back to the group
 ```
 
-A note on the choice: BigQuery is an analytics warehouse, not a low-latency
-transactional database, so expect query times in the range of a few hundred
-milliseconds to a couple of seconds per lookup (not the sub-100ms you'd get
-from a purpose-built vector DB like Pinecone). At your FAQ dataset's size,
-this is a fine trade-off if you want everything living in GCP/SQL rather
-than another service to manage.
+Neonize is a cutting-edge Python library that transforms WhatsApp automation from complex to simple. Built on top of the robust Whatsmeow Go library, it delivers enterprise-grade performance with Python's ease of use and developer-friendly API. More information about Neonize here https://github.com/krypton-byte/neonize
+
+A note on the choice: BigQuery is an analytics warehouse, not a low-latency transactional database, so expect query times in the range of a few hundred milliseconds to a couple of seconds per lookup. My FAQ dataset's size is very small (~ 61 questions to start), this is a fine trade-off if you want everything living in GCP/SQL rather than another service to manage. The decision of using BigQuery resides in a past project where the data pipeline for this organization was hosted in BigQuery, so I wanted to be consistent. More information about the data pipeline here https://github.com/lauosgom/llamatel-crisis-lifeline-pipeline
 
 ## Setup
 
@@ -285,6 +299,50 @@ sudo cp whatsapp-faq-bot.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now whatsapp-faq-bot
 ```
+
+## Evaluation
+
+it's single-vector semantic search. Each FAQ entry becomes exactly one embedding ("Q: {question}\nA: {answer}", embedded as one string) and BigQuery's VECTOR_SEARCH does nearest-neighbor lookup against that one vector. There's no separate "question relevance score" and "answer relevance score" to weight against each other — it's already collapsed into a single number (cosine distance) before boosting could even apply.
+
+The real design choice you do have control over is what text gets embedded, not how it's weighted after the fact. A few options:
+
+Combined Q+A (what you have now) — the answer's wording gets folded into the vector, which can help or hurt depending on whether the answer text pulls the vector toward or away from how people actually phrase questions.
+Question-only embedding — since incoming user queries are themselves questions, matching question-to-question semantically is often the strongest signal. This is a common finding in FAQ retrieval specifically: embedding just the question, and treating the answer as pure retrieved payload (never embedded), frequently outperforms combined text.
+
+1. Build the combined-text table
+```bash
+python build_index.py --embedding-mode combined --table-id faq_embeddings_combined
+```
+
+2. Build the question-only variant, into a separate table
+```bash
+python build_index.py --embedding-mode question_only --table-id faq_embeddings_qonly
+```
+
+3. Make sure you have ground truth
+```bash
+python generate_ground_truth.py
+```
+
+4. Evaluate both tables against the same ground truth
+```bash
+python evaluation/evaluate.py --table-id faq_embeddings_combined
+python evaluation/evaluate.py --table-id faq_embeddings_qonly
+```
+
+**Results**
+Evaluated 122 questions (top_k=3, table=faq_bot.faq_embeddings_combined):
+hit_rate: 0.992
+mrr:      0.956
+
+Evaluated 122 questions (top_k=3, table=faq_bot.faq_embeddings_qonly):
+hit_rate: 0.926
+mrr:      0.895
+
+hit_rate: 0.992 — the correct FAQ entry showed up somewhere in the top-3 results for 121 out of 122 test questions.
+mrr: 0.956 — and when it did find the right entry, it was almost always ranked #1 (MRR this close to the hit rate means hits are rarely happening at rank 2 or 3 — they're landing right at the top).
+
+Compare that to question-only: 0.926/0.895 — still good, but missing roughly 9 questions instead of 1, and with more of its correct hits buried at rank 2-3 rather than rank 1.
 
 ## Notes
 
