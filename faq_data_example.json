@@ -1,0 +1,18 @@
+[
+  {
+    "question": "What time does the office open?",
+    "answer": "The office is open Monday to Friday, 9 AM to 6 PM."
+  },
+  {
+    "question": "How do I reset my password?",
+    "answer": "Go to the login page, click 'Forgot password', and follow the email instructions."
+  },
+  {
+    "question": "What is the refund policy?",
+    "answer": "Refunds are available within 30 days of purchase with a valid receipt."
+  },
+  {
+    "question": "How can I contact support?",
+    "answer": "Email support@example.com or call +1-555-0100 during business hours."
+  }
+]

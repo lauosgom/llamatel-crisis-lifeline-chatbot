@@ -1,8 +1,3 @@
-variable "credentials" {
-  description = "Path to GCP credentials JSON file"
-  default     = "./keys/credentials.json"
-}
-
 variable "project_id" {
   description = "GCP project ID that will host the BigQuery dataset/table and the bot VM."
   default        = "singular-arbor-401018"
@@ -36,6 +31,12 @@ variable "table_id" {
   description = "BigQuery table ID for the FAQ embeddings."
   type        = string
   default     = "faq_embeddings"
+}
+
+variable "query_log_table_id" {
+  description = "BigQuery table ID for logged bot questions/answers (for future FAQ enrichment)."
+  type        = string
+  default     = "query_logs"
 }
 
 variable "vm_name" {

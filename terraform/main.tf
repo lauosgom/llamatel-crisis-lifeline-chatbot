@@ -25,6 +25,29 @@ resource "google_bigquery_table" "faq_embeddings" {
   ])
 }
 
+resource "google_bigquery_table" "query_logs" {
+  dataset_id = google_bigquery_dataset.faq_bot.dataset_id
+  table_id   = var.query_log_table_id
+
+  deletion_protection = true
+
+  time_partitioning {
+    type  = "DAY"
+    field = "timestamp"
+  }
+
+  schema = jsonencode([
+    { name = "id", type = "STRING", mode = "REQUIRED" },
+    { name = "timestamp", type = "TIMESTAMP", mode = "REQUIRED" },
+    { name = "question", type = "STRING", mode = "REQUIRED" },
+    { name = "matched_faq_id", type = "STRING", mode = "NULLABLE" },
+    { name = "distance", type = "FLOAT64", mode = "NULLABLE" },
+    { name = "responded", type = "BOOL", mode = "REQUIRED" },
+    { name = "answer", type = "STRING", mode = "NULLABLE" },
+  ])
+}
+
+
 ##############################
 # Service account for the bot
 ##############################

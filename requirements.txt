@@ -1,0 +1,4 @@
+neonize
+google-cloud-bigquery
+openai
+python-dotenv
