@@ -46,7 +46,7 @@ QUERY_LOG_SCHEMA = [
 # silent rather than guessing. COSINE distance ranges 0 (identical) to 2
 # (opposite) — LOWER = more similar. Tune against real questions from your
 # group (print the distance in retrieve() while testing).
-DISTANCE_THRESHOLD = 0.25
+DISTANCE_THRESHOLD = 0.5
 
 TOP_K = 3
 

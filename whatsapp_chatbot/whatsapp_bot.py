@@ -2,17 +2,22 @@
 whatsapp_bot.py
 Connects to WhatsApp via Neonize (unofficial multi-device client), listens
 for messages in a group, decides whether the FAQ bot should respond, and
-replies using rag.answer_question().
+replies using rag.generate_answer().
 
 First run: a QR code will print in the terminal. Scan it with the WhatsApp
 account you want the bot to run as (use a secondary/test number, not your
 personal one).
 
-Trigger logic (see decide_should_respond):
+Trigger logic (see on_message):
   1. Message starts with a keyword like "!faq" -> always respond.
   2. Message looks like a question ("?") -> respond only if the FAQ index
      has a confident match, otherwise stay silent.
-  3. Otherwise -> ignore.
+  3. Otherwise -> ignore (not evaluated, not logged).
+
+Every message that reaches step 1 or 2 gets logged via rag.log_interaction,
+whether or not the bot actually responds - unanswered questions are the
+most useful signal for finding FAQ gaps later. Only the question text and
+match outcome are stored, no sender/group identifying info.
 
 NOTE: Neonize's exact event/field names can change between versions -
 check `neonize.events` in your installed version if this doesn't match
@@ -22,10 +27,13 @@ check `neonize.events` in your installed version if this doesn't match
 import logging
 import os
 
+from dotenv import load_dotenv
 from neonize.client import NewClient
 from neonize.events import ConnectedEv, MessageEv, event
 
 import rag
+
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("faq_bot")
@@ -44,19 +52,9 @@ ALLOWED_GROUP_JIDS: set[str] = set()
 #   NEONIZE_DB_PATH=/mnt/bot-data/neonize.db
 NEONIZE_DB_PATH = os.environ.get("NEONIZE_DB_PATH", "./neonize.db")
 
-client = NewClient(name="faq-bot", database=NEONIZE_DB_PATH)
+client = NewClient(NEONIZE_DB_PATH)
 
-
-def decide_should_respond(text: str) -> bool:
-    lowered = text.strip().lower()
-
-    if any(lowered.startswith(kw) for kw in TRIGGER_KEYWORDS):
-        return True
-
-    if text.strip().endswith("?"):
-        return rag.has_good_match(text)
-
-    return False
+rag.ensure_query_log_table_exists()
 
 
 def strip_trigger_keyword(text: str) -> str:
@@ -87,19 +85,42 @@ def on_message(client: NewClient, message: MessageEv):
     if ALLOWED_GROUP_JIDS and str(chat_jid) not in ALLOWED_GROUP_JIDS:
         return
 
-    if not decide_should_respond(text):
-        return
+    stripped = text.strip()
+    lowered = stripped.lower()
+    is_keyword_triggered = any(lowered.startswith(kw) for kw in TRIGGER_KEYWORDS)
+    looks_like_question = stripped.endswith("?")
+
+    if not (is_keyword_triggered or looks_like_question):
+        return  # not something the bot evaluates at all - ignore, don't log
 
     question = strip_trigger_keyword(text)
+
+    try:
+        matches = rag.retrieve(question)
+    except Exception:
+        log.exception("Retrieval failed")
+        return
+
+    top_distance = matches[0][3] if matches else None
+    should_respond = is_keyword_triggered or (
+        top_distance is not None and top_distance <= rag.DISTANCE_THRESHOLD
+    )
+
+    if not should_respond:
+        log.info("No confident match, staying silent: %s", question)
+        rag.log_interaction(question, responded=False, matches=matches)
+        return
+
     log.info("Answering question: %s", question)
 
     try:
-        answer = rag.answer_question(question)
+        answer = rag.generate_answer(question, matches)
     except Exception:
         log.exception("Failed to generate answer")
         return
 
-    client.send_message(chat_jid, text=answer)
+    rag.log_interaction(question, responded=True, answer=answer, matches=matches)
+    client.send_message(chat_jid, answer)
 
 
 if __name__ == "__main__":

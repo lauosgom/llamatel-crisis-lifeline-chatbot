@@ -10,7 +10,7 @@ EnvironmentFile=/opt/whatsapp-faq-bot/.env
 ExecStart=/opt/whatsapp-faq-bot/venv/bin/python whatsapp_bot.py
 Restart=on-failure
 RestartSec=5
-User=bot
+User=whatsapp-faq-bot
 
 [Install]
 WantedBy=multi-user.target
