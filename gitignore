@@ -11,5 +11,4 @@ __pycache__/
 *.pyc
 .venv/
 venv/
-faq-bot-key.json
 *.csv
