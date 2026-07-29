@@ -21,6 +21,26 @@ More information about Telefono de la Esperanza here https://telefonodelaesperan
 
 ## Project Architecture
 
+```mermaid
+flowchart TD
+    WhatsApp["WhatsApp group"]
+    Bot["whatsapp_bot.py<br/>Neonize client"]
+    RAG["RAG module (rag.py)"]
+    Search[("BigQuery VECTOR_SEARCH<br/>faq_embeddings")]
+    LLM["OpenAI<br/>gpt-4o-mini + embeddings"]
+    Logs[("BigQuery<br/>query_logs")]
+    WhatsApp --> Bot
+    Bot --> RAG
+    RAG --> Search
+    RAG --> LLM
+    RAG --> Bot
+    Bot --> WhatsApp
+    RAG --> Logs
+    style Search fill:#1e3a5f,color:#fff
+    style LLM fill:#10a37f,color:#fff
+    style Logs fill:#336791,color:#fff
+```
+
 ## How it works
 
 ```
@@ -330,19 +350,19 @@ python evaluation/evaluate.py --table-id faq_embeddings_combined
 python evaluation/evaluate.py --table-id faq_embeddings_qonly
 ```
 
-**Results**
-Evaluated 122 questions (top_k=3, table=faq_bot.faq_embeddings_combined):
-hit_rate: 0.992
-mrr:      0.956
+**Results** 
+Evaluated 122 questions (top_k=3, table=faq_bot.faq_embeddings_combined): 
+hit_rate: 0.992 
+mrr:      0.956 
 
-Evaluated 122 questions (top_k=3, table=faq_bot.faq_embeddings_qonly):
-hit_rate: 0.926
-mrr:      0.895
+Evaluated 122 questions (top_k=3, table=faq_bot.faq_embeddings_qonly): 
+hit_rate: 0.926 
+mrr:      0.895 
 
-hit_rate: 0.992 — the correct FAQ entry showed up somewhere in the top-3 results for 121 out of 122 test questions.
-mrr: 0.956 — and when it did find the right entry, it was almost always ranked #1 (MRR this close to the hit rate means hits are rarely happening at rank 2 or 3 — they're landing right at the top).
+hit_rate: 0.992. The correct FAQ entry showed up somewhere in the top-3 results for 121 out of 122 test questions.
+mrr: 0.956. When it did find the right entry, it was almost always ranked #1 (MRR this close to the hit rate means hits are rarely happening at rank 2 or 3 they're landing right at the top).
 
-Compare that to question-only: 0.926/0.895 — still good, but missing roughly 9 questions instead of 1, and with more of its correct hits buried at rank 2-3 rather than rank 1.
+Compare that to question-only: 0.926/0.895 is still good, but missing roughly 9 questions instead of 1, and with more of its correct hits buried at rank 2-3 rather than rank 1.
 
 ## Notes
 
