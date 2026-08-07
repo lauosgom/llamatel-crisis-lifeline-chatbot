@@ -44,7 +44,7 @@ TRIGGER_KEYWORDS = ("!faq", "!ask")
 # one group. Leave empty to respond in every group/chat it's part of.
 # Group JIDs look like "120363xxxxxxxxxx@g.us" - find yours by logging
 # incoming message.info.message_source.chat once connected.
-ALLOWED_GROUP_JIDS: set[str] = set()
+ALLOWED_GROUP_JIDS: set[str] = {"120363428376507286@g.us"}
 
 # Defaults to a local file for easy local testing. In production, point
 # this at the mounted persistent disk (see terraform/) so the WhatsApp
