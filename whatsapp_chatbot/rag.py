@@ -48,7 +48,7 @@ QUERY_LOG_SCHEMA = [
 # group (print the distance in retrieve() while testing).
 DISTANCE_THRESHOLD = 0.5
 
-TOP_K = 3
+TOP_K = 5
 
 SYSTEM_PROMPT = (
     "You are a helpful FAQ assistant for a WhatsApp group. "

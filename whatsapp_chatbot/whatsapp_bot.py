@@ -30,12 +30,13 @@ import os
 from dotenv import load_dotenv
 from neonize.client import NewClient
 from neonize.events import ConnectedEv, MessageEv, event
+from neonize.utils import Jid2String
 
 import rag
 
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)  # TEMP: verbose for troubleshooting - set back to INFO once resolved
 log = logging.getLogger("faq_bot")
 
 TRIGGER_KEYWORDS = ("!faq", "!ask")
@@ -82,7 +83,11 @@ def on_message(client: NewClient, message: MessageEv):
     if not text:
         return
 
-    if ALLOWED_GROUP_JIDS and str(chat_jid) not in ALLOWED_GROUP_JIDS:
+    chat_jid_str = Jid2String(chat_jid)
+    log.debug("Received message in %s: %r", chat_jid_str, text)
+
+    if ALLOWED_GROUP_JIDS and chat_jid_str not in ALLOWED_GROUP_JIDS:
+        log.debug("Ignored - %s not in ALLOWED_GROUP_JIDS", chat_jid_str)
         return
 
     stripped = text.strip()
@@ -91,7 +96,8 @@ def on_message(client: NewClient, message: MessageEv):
     looks_like_question = stripped.endswith("?")
 
     if not (is_keyword_triggered or looks_like_question):
-        return  # not something the bot evaluates at all - ignore, don't log
+        log.debug("Ignored - no trigger keyword and doesn't end in '?'")
+        return  # not something the bot evaluates at all
 
     question = strip_trigger_keyword(text)
 
