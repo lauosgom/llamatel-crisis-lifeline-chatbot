@@ -47,6 +47,90 @@ resource "google_bigquery_table" "query_logs" {
   ])
 }
 
+##############################
+# Monitoring dashboard views (for Looker Studio) - pre-aggregated so the
+# dashboard queries a small view instead of scanning/aggregating raw
+# query_logs rows on every page load. Views are plain SQL, no dbt needed
+# at this scale - see the depends_on on each, which ensures Terraform
+# creates the underlying tables before any view that reads them.
+##############################
+
+resource "google_bigquery_table" "query_logs_daily_stats" {
+  dataset_id = google_bigquery_dataset.faq_bot.dataset_id
+  table_id   = "query_logs_daily_stats"
+
+  view {
+    use_legacy_sql = false
+    query          = <<-SQL
+      SELECT
+        DATE(timestamp) AS day,
+        COUNT(*) AS total_questions,
+        COUNTIF(responded) AS answered,
+        COUNTIF(NOT responded) AS unanswered,
+        SAFE_DIVIDE(COUNTIF(responded), COUNT(*)) AS response_rate
+      FROM `${var.project_id}.${google_bigquery_dataset.faq_bot.dataset_id}.${var.query_log_table_id}`
+      GROUP BY day
+      ORDER BY day
+    SQL
+  }
+
+  depends_on = [google_bigquery_table.query_logs]
+}
+
+resource "google_bigquery_table" "query_logs_top_faqs" {
+  dataset_id = google_bigquery_dataset.faq_bot.dataset_id
+  table_id   = "query_logs_top_faqs"
+
+  view {
+    use_legacy_sql = false
+    query          = <<-SQL
+      SELECT
+        q.matched_faq_id,
+        f.question AS faq_question,
+        COUNT(*) AS times_asked,
+        AVG(q.distance) AS avg_distance
+      FROM `${var.project_id}.${google_bigquery_dataset.faq_bot.dataset_id}.${var.query_log_table_id}` q
+      LEFT JOIN `${var.project_id}.${google_bigquery_dataset.faq_bot.dataset_id}.${var.table_id}` f
+        ON q.matched_faq_id = f.id
+      WHERE q.responded = TRUE
+      GROUP BY q.matched_faq_id, f.question
+      ORDER BY times_asked DESC
+    SQL
+  }
+
+  depends_on = [
+    google_bigquery_table.query_logs,
+    google_bigquery_table.faq_embeddings,
+  ]
+}
+
+resource "google_bigquery_table" "query_logs_distance_distribution" {
+  dataset_id = google_bigquery_dataset.faq_bot.dataset_id
+  table_id   = "query_logs_distance_distribution"
+
+  view {
+    use_legacy_sql = false
+    query          = <<-SQL
+      SELECT
+        CASE
+          WHEN distance IS NULL THEN 'no_match'
+          WHEN distance <= 0.10 THEN '0.00-0.10'
+          WHEN distance <= 0.20 THEN '0.10-0.20'
+          WHEN distance <= 0.25 THEN '0.20-0.25'
+          WHEN distance <= 0.35 THEN '0.25-0.35'
+          WHEN distance <= 0.50 THEN '0.35-0.50'
+          ELSE '0.50+'
+        END AS distance_bucket,
+        responded,
+        COUNT(*) AS count
+      FROM `${var.project_id}.${google_bigquery_dataset.faq_bot.dataset_id}.${var.query_log_table_id}`
+      GROUP BY distance_bucket, responded
+      ORDER BY distance_bucket
+    SQL
+  }
+
+  depends_on = [google_bigquery_table.query_logs]
+}
 
 ##############################
 # Service account for the bot
