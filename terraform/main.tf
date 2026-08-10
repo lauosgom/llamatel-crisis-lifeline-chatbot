@@ -44,6 +44,36 @@ resource "google_bigquery_table" "query_logs" {
     { name = "distance", type = "FLOAT64", mode = "NULLABLE" },
     { name = "responded", type = "BOOL", mode = "REQUIRED" },
     { name = "answer", type = "STRING", mode = "NULLABLE" },
+    { name = "message_id", type = "STRING", mode = "NULLABLE" },
+  ])
+}
+
+
+# Feedback on individual answers - either a group member's emoji reaction
+# on the bot's reply, or the admin's own review. Append-only (no UPDATEs
+# on query_logs itself, which BigQuery's streaming buffer makes awkward
+# soon after insert) - query_logs_id links each row back to the question
+# it's rating. A message can end up with multiple feedback rows (e.g. a
+# reaction changed, or both a reaction and an admin review exist); read
+# the latest one per query_logs_id when you need a single verdict.
+resource "google_bigquery_table" "feedback" {
+  dataset_id = google_bigquery_dataset.faq_bot.dataset_id
+  table_id   = var.feedback_table_id
+
+  deletion_protection = true
+
+  time_partitioning {
+    type  = "DAY"
+    field = "timestamp"
+  }
+
+  schema = jsonencode([
+    { name = "id", type = "STRING", mode = "REQUIRED" },
+    { name = "timestamp", type = "TIMESTAMP", mode = "REQUIRED" },
+    { name = "query_log_id", type = "STRING", mode = "REQUIRED" },
+    { name = "source", type = "STRING", mode = "REQUIRED" },
+    { name = "rating", type = "STRING", mode = "REQUIRED" },
+    { name = "note", type = "STRING", mode = "NULLABLE" },
   ])
 }
 
@@ -131,6 +161,44 @@ resource "google_bigquery_table" "query_logs_distance_distribution" {
 
   depends_on = [google_bigquery_table.query_logs]
 }
+
+resource "google_bigquery_table" "query_logs_with_feedback" {
+  dataset_id = google_bigquery_dataset.faq_bot.dataset_id
+  table_id   = "query_logs_with_feedback"
+
+  view {
+    use_legacy_sql = false
+    query          = <<-SQL
+      WITH latest_feedback AS (
+        SELECT
+          query_log_id,
+          ARRAY_AGG(STRUCT(source, rating, note, timestamp) ORDER BY timestamp DESC LIMIT 1)[OFFSET(0)] AS latest
+        FROM `${var.project_id}.${google_bigquery_dataset.faq_bot.dataset_id}.${var.feedback_table_id}`
+        GROUP BY query_log_id
+      )
+      SELECT
+        q.id,
+        q.timestamp,
+        q.question,
+        q.matched_faq_id,
+        q.distance,
+        q.responded,
+        q.answer,
+        f.latest.source AS feedback_source,
+        f.latest.rating AS feedback_rating,
+        f.latest.note AS feedback_note
+      FROM `${var.project_id}.${google_bigquery_dataset.faq_bot.dataset_id}.${var.query_log_table_id}` q
+      LEFT JOIN latest_feedback f ON q.id = f.query_log_id
+      ORDER BY q.timestamp DESC
+    SQL
+  }
+
+  depends_on = [
+    google_bigquery_table.query_logs,
+    google_bigquery_table.feedback,
+  ]
+}
+
 
 ##############################
 # Service account for the bot

@@ -12,7 +12,7 @@ variable "region" {
 variable "zone" {
   description = "GCP zone for the bot VM."
   type        = string
-  default     = "us-central1-a"
+  default     = "us-east1-c"
 }
 
 variable "bq_location" {
@@ -37,6 +37,12 @@ variable "query_log_table_id" {
   description = "BigQuery table ID for logged bot questions/answers (for future FAQ enrichment)."
   type        = string
   default     = "query_logs"
+}
+
+variable "feedback_table_id" {
+  description = "BigQuery table ID for feedback (reactions + admin review) on logged answers."
+  type        = string
+  default     = "feedback"
 }
 
 variable "vm_name" {
