@@ -188,6 +188,28 @@ resource "google_compute_firewall" "allow_iap_ssh" {
 }
 
 ##############################
+# Cloud NAT: gives the no-public-IP VM outbound internet access (apt,
+# pip, git, etc.) without exposing it to any inbound traffic. Without
+# this, a VM with no external IP has no route to the public internet at
+# all - it can reach Google APIs (BigQuery, etc.) but nothing else.
+##############################
+
+resource "google_compute_router" "nat_router" {
+  name    = "${var.vm_name}-nat-router"
+  network = "default"
+  region  = var.region
+}
+
+resource "google_compute_router_nat" "nat" {
+  name                               = "${var.vm_name}-nat"
+  router                             = google_compute_router.nat_router.name
+  region                             = var.region
+  nat_ip_allocate_option             = "AUTO_ONLY"
+  source_subnetwork_ip_ranges_to_nat = "ALL_SUBNETWORKS_ALL_IP_RANGES"
+}
+
+
+##############################
 # Persistent disk for the WhatsApp session (survives VM recreation)
 ##############################
 
