@@ -199,16 +199,16 @@ pip install -r requirements.txt
 If your FAQ source is a CSV: `python csv_to_faq_json.py your_faqs.csv`
 first, to produce `faq_data.json`. Then:
 ```bash
-python build_index.py
+python data/build_index.py
 ```
 Sanity-check before touching WhatsApp at all:
 ```bash
-python rag.py "¿Qué es el Teléfono de la Esperanza?"
+python whatsapp_chatbot/rag.py "¿Qué es el Teléfono de la Esperanza?"
 ```
 
 ### Find your group's JID and restrict the bot to it
 ```bash
-python find_group_jid.py
+python settings/find_group_jid.py
 ```
 You will find something like this:
 ```bash
@@ -221,7 +221,7 @@ Copy the resulting JID into `ALLOWED_GROUP_JIDS` in `whatsapp_bot.py`. Replace s
 ```
 ### First run (interactive QR scan)
 ```bash
-python whatsapp_bot.py
+python whatsapp_chatbot/whatsapp_bot.py
 ```
 Scan with your secondary WhatsApp number. Confirm a test question in the
 group gets answered, then `Ctrl+C`.
@@ -231,7 +231,7 @@ Edit `terraform/whatsapp-faq-bot.service` — confirm `WorkingDirectory`,
 `ExecStart`, `EnvironmentFile` paths match your actual layout, and set
 `User` to a real account (`whoami` to check).
 ```bash
-sudo cp whatsapp-faq-bot.service /etc/systemd/system/
+sudo cp whatsapp_chatbot/whatsapp-faq-bot.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now whatsapp-faq-bot
 sudo systemctl status whatsapp-faq-bot
@@ -246,7 +246,7 @@ ground truth rather than hand-written test questions.
 
 ### Generate ground truth
 ```bash
-python generate_ground_truth.py
+python evaluation/generate_ground_truth.py
 ```
 Writes `data/ground-truth-retrieval.csv` — for each FAQ entry, a few
 realistic paraphrased questions a real person might ask (deliberately
@@ -259,7 +259,7 @@ human pass regardless).
 
 ### Run retrieval evaluation
 ```bash
-python evaluate.py
+python evaluation/evaluate.py
 ```
 Reports `hit_rate` (did the correct FAQ entry appear in the top-k
 results) and `mrr` (mean reciprocal rank — how highly it was ranked when
@@ -267,10 +267,10 @@ found), following the standard llm-zoomcamp evaluation pattern.
 
 ### A/B test embedding strategies
 ```bash
-python build_index.py --embedding-mode combined --table-id faq_embeddings_combined
-python build_index.py --embedding-mode question_only --table-id faq_embeddings_qonly
-python evaluate.py --table-id faq_embeddings_combined
-python evaluate.py --table-id faq_embeddings_qonly
+python ingestion/build_index.py --embedding-mode combined --table-id faq_embeddings_combined
+python ingestion/build_index.py --embedding-mode question_only --table-id faq_embeddings_qonly
+python evaluation/evaluate.py --table-id faq_embeddings_combined
+python evaluation/evaluate.py --table-id faq_embeddings_qonly
 ```
 Point `.env`'s `BQ_TABLE_ID` at whichever wins, then delete the losing
 table (`bq rm -t ...`) so it doesn't linger untracked.
@@ -338,6 +338,15 @@ The enrichment loop, end to end:
    the VM: `git pull && python build_index.py` (index rebuild doesn't
    need a bot restart — it's a separate BigQuery write, not something the
    running process caches).
+
+
+## Dashboard
+
+A very preliminary dashboard can be found here. It has some basic metrics to show how the bot is doing and if it needs any adjustments
+
+![Project Screenshot](assets/dashboard.png)
+
+Go to https://datastudio.google.com/s/uLkC-0V2mis
 
 ## Notes
 
