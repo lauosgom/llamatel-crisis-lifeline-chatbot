@@ -40,15 +40,28 @@ QUERY_LOG_SCHEMA = [
     bigquery.SchemaField("distance", "FLOAT64", mode="NULLABLE"),
     bigquery.SchemaField("responded", "BOOL", mode="REQUIRED"),
     bigquery.SchemaField("answer", "STRING", mode="NULLABLE"),
+    bigquery.SchemaField("message_id", "STRING", mode="NULLABLE"),
+]
+
+FEEDBACK_TABLE_ID = os.environ.get("BQ_FEEDBACK_TABLE_ID", "feedback")
+FEEDBACK_TABLE_FQN = f"{PROJECT_ID}.{DATASET_ID}.{FEEDBACK_TABLE_ID}"
+
+FEEDBACK_SCHEMA = [
+    bigquery.SchemaField("id", "STRING", mode="REQUIRED"),
+    bigquery.SchemaField("timestamp", "TIMESTAMP", mode="REQUIRED"),
+    bigquery.SchemaField("query_log_id", "STRING", mode="REQUIRED"),
+    bigquery.SchemaField("source", "STRING", mode="REQUIRED"),  # "reaction" or "admin"
+    bigquery.SchemaField("rating", "STRING", mode="REQUIRED"),  # "good" or "bad"
+    bigquery.SchemaField("note", "STRING", mode="NULLABLE"),
 ]
 
 # Below this cosine distance, we treat the FAQ as "no good match" and stay
 # silent rather than guessing. COSINE distance ranges 0 (identical) to 2
 # (opposite) — LOWER = more similar. Tune against real questions from your
 # group (print the distance in retrieve() while testing).
-DISTANCE_THRESHOLD = 0.6
+DISTANCE_THRESHOLD = 0.25
 
-TOP_K = 5
+TOP_K = 3
 
 SYSTEM_PROMPT = (
     "You are a helpful FAQ assistant for a WhatsApp group. "
@@ -149,26 +162,46 @@ def ensure_query_log_table_exists():
         print(f"Created table {QUERY_LOG_TABLE_FQN}")
 
 
+def ensure_feedback_table_exists():
+    try:
+        bq_client.get_table(FEEDBACK_TABLE_FQN)
+    except Exception:
+        table = bigquery.Table(FEEDBACK_TABLE_FQN, schema=FEEDBACK_SCHEMA)
+        table.time_partitioning = bigquery.TimePartitioning(
+            type_=bigquery.TimePartitioningType.DAY, field="timestamp"
+        )
+        bq_client.create_table(table)
+        print(f"Created table {FEEDBACK_TABLE_FQN}")
+
+
 def log_interaction(
-    question: str, responded: bool, answer: str | None = None, matches: list | None = None
-):
+    question: str,
+    responded: bool,
+    answer: str | None = None,
+    matches: list | None = None,
+    message_id: str | None = None,
+) -> str:
     """Logs a question and its outcome to BigQuery for later FAQ review -
     no sender/group identifying info is stored, only the question text,
-    the best match (if any), and whether/what the bot answered.
+    the best match (if any), and whether/what the bot answered. Pass
+    message_id (the sent reply's WhatsApp message ID) so a later reaction
+    can be correlated back to this row via find_query_log_id_by_message_id.
     Logging failures are swallowed so a BigQuery hiccup never breaks the
-    bot's actual response to the group."""
+    bot's actual response to the group. Returns the row's generated id."""
     top_id, top_distance = (None, None)
     if matches:
         top_id, top_distance = matches[0][0], matches[0][3]
 
+    row_id = str(uuid.uuid4())
     row = {
-        "id": str(uuid.uuid4()),
+        "id": row_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "question": question,
         "matched_faq_id": top_id,
         "distance": top_distance,
         "responded": responded,
         "answer": answer,
+        "message_id": message_id,
     }
 
     try:
@@ -177,6 +210,55 @@ def log_interaction(
             print(f"Failed to log interaction: {errors}")
     except Exception as e:
         print(f"Failed to log interaction: {e}")
+
+    return row_id
+
+
+def find_query_log_id_by_message_id(message_id: str) -> str | None:
+    """Looks up which logged question a WhatsApp message ID corresponds
+    to - used when a reaction comes in, to know which row to attach
+    feedback to. Returns None if not found (e.g. someone reacted to a
+    message that wasn't a bot reply, or the row aged out of the lookback
+    window)."""
+    sql = f"""
+        SELECT id
+        FROM `{QUERY_LOG_TABLE_FQN}`
+        WHERE message_id = @message_id
+        ORDER BY timestamp DESC
+        LIMIT 1
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("message_id", "STRING", message_id)]
+    )
+    try:
+        results = list(bq_client.query(sql, job_config=job_config).result())
+    except Exception as e:
+        print(f"Failed to look up query_log_id for message_id={message_id}: {e}")
+        return None
+    return results[0].id if results else None
+
+
+def record_feedback(
+    query_log_id: str, source: str, rating: str, note: str | None = None
+) -> None:
+    """Records feedback (a reaction or an admin review) against a logged
+    question. Append-only by design - see the Terraform comment on the
+    feedback table for why. Logging failures are swallowed, same as
+    log_interaction, so this never breaks the bot's main flow."""
+    row = {
+        "id": str(uuid.uuid4()),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "query_log_id": query_log_id,
+        "source": source,
+        "rating": rating,
+        "note": note,
+    }
+    try:
+        errors = bq_client.insert_rows_json(FEEDBACK_TABLE_FQN, [row])
+        if errors:
+            print(f"Failed to record feedback: {errors}")
+    except Exception as e:
+        print(f"Failed to record feedback: {e}")
 
 
 if __name__ == "__main__":
