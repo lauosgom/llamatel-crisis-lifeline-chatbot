@@ -2,7 +2,10 @@
 
 ## Project Overview
 
-This project Answers frequently asked questions in a WhatsApp group using retrieval-augmented generation over your own FAQ document, with the vector store hosted in Google BigQuery.
+A WhatsApp group bot that answers FAQ questions about Teléfono de la
+Esperanza using retrieval-augmented generation, hosted on GCP. This guide
+covers the decisions behind the architecture, full setup from scratch,
+and the ongoing workflows (evaluation, feedback, FAQ enrichment).
 
 ## Problem Statement
 
@@ -28,7 +31,7 @@ flowchart TD
     RAG["RAG module (rag.py)"]
     Search[("BigQuery VECTOR_SEARCH<br/>faq_embeddings")]
     LLM["OpenAI<br/>gpt-4o-mini + embeddings"]
-    Logs[("BigQuery<br/>query_logs")]
+    Logs[("BigQuery<br/>query_logs + feedback")]
     WhatsApp --> Bot
     Bot --> RAG
     RAG --> Search
@@ -40,6 +43,10 @@ flowchart TD
     style LLM fill:#10a37f,color:#fff
     style Logs fill:#336791,color:#fff
 ```
+
+Everything lives in one GCP project: a dedicated Compute Engine VM runs
+the bot process, BigQuery holds both the FAQ vector index and the
+question/answer/feedback logs, and OpenAI handles embeddings + generation.
 
 ## How it works
 
@@ -58,7 +65,36 @@ Neonize is a cutting-edge Python library that transforms WhatsApp automation fro
 
 A note on the choice: BigQuery is an analytics warehouse, not a low-latency transactional database, so expect query times in the range of a few hundred milliseconds to a couple of seconds per lookup. My FAQ dataset's size is very small (~ 61 questions to start), this is a fine trade-off if you want everything living in GCP/SQL rather than another service to manage. The decision of using BigQuery resides in a past project where the data pipeline for this organization was hosted in BigQuery, so I wanted to be consistent. More information about the data pipeline here https://github.com/lauosgom/llamatel-crisis-lifeline-pipeline
 
+### Key decisions and why
+
+Reproducing this project means understanding *why* it's built this way,
+not just copying commands. These are the load-bearing choices:
+
+| Decision | Choice | Why |
+|---|---|---|
+| RAG style | Plain (fixed retrieve → generate), not agentic | The FAQ is single-hop by nature — one question maps to one entry. Agentic tool-calling adds latency/cost for query reformulation that a well-tuned `DISTANCE_THRESHOLD` mostly achieves anyway. Revisit only if real-world hit rate turns out poor. |
+| Vector store | BigQuery `VECTOR_SEARCH`, not Chroma/Pinecone/Supabase | Deliberate choice to keep everything inside one GCP project/IAM story, even knowing BigQuery has higher query latency than a purpose-built vector DB. Acceptable trade-off at this FAQ's scale. |
+| Embedding model | OpenAI `text-embedding-3-small` | Cheaper than Gemini's embedding API at this scale; already using OpenAI for generation, so one vendor instead of two. |
+| Embedding content | Combined `"Q: ...\nA: ..."`, not question-only | A/B tested with `evaluate.py`: combined scored `hit_rate=0.992`/`mrr=0.956` vs question-only's `0.926`/`0.895` on 122 synthetic questions. See section 5. |
+| Chat model | `gpt-4o-mini` | Cheap, fast, sufficient quality for short FAQ answers. |
+| WhatsApp connection | Neonize (unofficial multi-device protocol) | The official WhatsApp Cloud API's Groups feature caps at 8 participants and can't attach to an existing group — a non-starter for a real community group. Neonize logs in as a real WhatsApp account instead. **Trade-off: not a Meta-sanctioned integration — use a secondary number, not a personal one, to limit risk.** |
+| Hosting | Dedicated `e2-micro` VM, separate from the existing Prefect VM | Isolation: an always-on unofficial-protocol process (crash/reconnect prone) shouldn't share fate with other production workloads, and e2-micro's 1GB RAM is already tight for one service. |
+| Infra as code | Terraform for dataset/tables/views/VM/disk/firewall/NAT | Reproducible, version-controlled infrastructure. |
+| Service account & IAM roles | Created and granted **manually**, not by Terraform | Deliberate choice to allow reusing an existing service account and to keep exact permissions visible/auditable rather than implicit in state. |
+| Secrets | `.env` file + `python-dotenv`, never hardcoded | Standard practice; `.env` is gitignored. |
+| Trigger logic | Keyword (`!faq`/`!ask`) always responds; bare `?` only responds if a confident match exists | Avoids the bot answering every unrelated question in an active group, while still catching natural questions. |
+| Logging | `query_logs` (every evaluated question, matched or not) + `feedback` (reactions/admin ratings), both append-only | No sender/group identifying info stored. Unanswered questions are the primary signal for FAQ gaps. Append-only avoids BigQuery's streaming-buffer UPDATE limitations. |
+
 ## Setup
+
+### Prerequisites
+
+- A GCP project with billing enabled
+- An OpenAI API key
+- A secondary WhatsApp-capable phone number (not your personal one)
+- `gcloud` CLI installed and authenticated locally
+- Terraform installed locally (`terraform -version` ≥ 1.5)
+- Python 3.11+ and `git` (the VM's `apt` packages, installed via Cloud NAT — see next section)
 
 All infrastructure (BigQuery dataset/table, the bot VM, disk, firewall) is
 managed by Terraform — see **Infrastructure (Terraform)** below for the
@@ -76,279 +112,169 @@ won't end up committed.
 
 ## Running the bot
 
-1. Install dependencies:
-   ```
-   pip install -r requirements.txt
-   ```
-
-2. Put your FAQ content in `faq_data.json`, following this schema:
-   ```json
-   [
-     {"question": "...", "answer": "..."},
-     {"question": "...", "answer": "..."}
-   ]
-   ```
-   (A sample file is included — replace it with your real data.)
-
-3. Build the index — this embeds each FAQ entry and loads it into
-   BigQuery. `build_index.py` creates the table automatically on first
-   run, and truncates + reloads it on every subsequent run, so it's safe
-   to re-run whenever the FAQ doc changes:
-   ```
-   python build_index.py
-   ```
-
-4. Test the RAG pipeline on its own, no WhatsApp needed:
-   ```
-   python rag.py "How do I reset my password?"
-   ```
-
-5. Start the WhatsApp bot:
-   ```
-   python whatsapp_bot.py
-   ```
-   Scan the QR code that prints in your terminal with the WhatsApp account
-   you want the bot to run as. **Use a secondary/test number**, not your
-   personal one — Neonize uses WhatsApp's unofficial multi-device protocol
-   (the same one behind tools like Baileys), which is not sanctioned by
-   Meta and carries some risk of the number being flagged if used heavily
-   or aggressively.
-
-6. Add that WhatsApp number to your target group. It will now listen for
-   messages there.
-
-## Tuning
-
-- `whatsapp_bot.py` → `TRIGGER_KEYWORDS`: change the keyword(s) that always
-  trigger a response (e.g. `!faq`, `@bot`).
-- `whatsapp_bot.py` → `ALLOWED_GROUP_JIDS`: restrict the bot to specific
-  groups. Leave empty to allow all groups the account is in.
-- `rag.py` → `DISTANCE_THRESHOLD`: controls how confident a match must be
-  before the bot answers an untriggered "?" message. This uses BigQuery's
-  COSINE distance (0 = identical, 2 = opposite), so LOWER = stricter
-  matching. Print the distance from `retrieve()` against a few real
-  questions to calibrate this for your data.
-- `rag.py` → `CHAT_MODEL`: swap in `gpt-4o` for higher quality at higher
-  cost, or keep `gpt-4o-mini` for a cheap/fast FAQ bot.
-
-## Query logging
-
-Every question that reaches the bot's trigger logic — whether it gets a
-confident match and a reply, or comes up empty and stays silent — is
-logged to a separate BigQuery table (`query_logs` by default) via
-`rag.log_interaction()`. The goal is to build up a real-world question
-log you can periodically review to find gaps in the FAQ and enrich it
-over time.
-
-What's stored per row: a random `id`, `timestamp`, the `question` text,
-the `matched_faq_id` and `distance` of the best match (if any), whether
-the bot `responded`, and the `answer` text if it did. **No sender or group
-identifying info is captured** - just the question and outcome.
-
-The table is created automatically the first time the bot runs
-(`ensure_query_log_table_exists()`), partitioned by day for cheap querying
-later. It's also declared in `terraform/main.tf` if you'd rather Terraform
-own its lifecycle instead of the bot process creating it on first run -
-either way ends up with the same schema.
-
-A couple of useful starting queries once you've got some real traffic:
-
-```sql
--- Questions that came up with no confident match - the best signal for
--- what's missing from your FAQ
-SELECT question, distance, timestamp
-FROM `YOUR_PROJECT_ID.faq_bot.query_logs`
-WHERE responded = FALSE
-ORDER BY timestamp DESC;
-
--- Which FAQ entries get asked about most, to prioritize what to refine
-SELECT matched_faq_id, COUNT(*) AS times_asked
-FROM `YOUR_PROJECT_ID.faq_bot.query_logs`
-WHERE responded = TRUE
-GROUP BY matched_faq_id
-ORDER BY times_asked DESC;
+### Clone the repo
+```bash
+git clone https://github.com/lauosgom/llamatel-crisis-lifeline-chatbot.git
+cd llamatel-crisis-lifeline-chatbot
 ```
 
-Logging failures are swallowed inside `log_interaction()` - a BigQuery
-hiccup will never block or break the bot's actual reply to the group.
-
-## Scaling up later
-
-If your FAQ table grows past a few thousand rows, add a vector index to
-keep `VECTOR_SEARCH` fast:
-```sql
-CREATE VECTOR INDEX faq_embedding_idx
-ON `YOUR_PROJECT_ID.faq_bot.faq_embeddings`(embedding)
-OPTIONS(index_type = 'IVF', distance_type = 'COSINE');
-```
-Below a few thousand rows this doesn't help (and BigQuery may just ignore
-it and fall back to brute-force search), so skip it until you actually
-need it.
-
-## Infrastructure (Terraform)
-
-The `terraform/` folder provisions:
-- The BigQuery dataset + table (matching the schema `build_index.py` expects)
-- A dedicated `e2-micro` Compute Engine VM with **no public IP** — reachable
-  only via IAP SSH tunneling — plus a separate persistent disk so the
-  WhatsApp session (`neonize.db`) survives VM recreation
-- A firewall rule allowing SSH only from Google's IAP range
-- A key for the bot's service account (see the note on keys below)
-
-It does **not** create the service account itself or grant it any IAM
-roles — both of those are done manually (steps 1 and 3 below), by design,
-so you can reuse an existing service account and control exactly what
-access it gets.
-
-### 1. Create the service account (manual)
-
-**Console:** IAM & Admin → Service Accounts → **+ Create Service Account**.
-Give it a name like `faq-bot-sa`, and skip the "grant access" step when
-creating it — roles are added separately in step 3.
-
-**Or via gcloud:**
+### Create the service account (manual, by design — see decision table)
 ```bash
 gcloud iam service-accounts create faq-bot-sa \
   --display-name="WhatsApp FAQ bot service account" \
   --project=YOUR_PROJECT_ID
 ```
+(Skip this if reusing an existing service account — just note its email for the next step.)
 
-If you're reusing an existing service account (e.g. one already used by
-another pipeline in this project), you can skip this step — just use its
-email in step 2.
-
-### 2. Apply the Terraform config
-
+### Configure and apply Terraform
 ```bash
 cd terraform
 cp terraform.tfvars.example terraform.tfvars
-# edit terraform.tfvars: set project_id and bot_service_account_email
-# (the account from step 1, or an existing one you're reusing)
-
+# edit terraform.tfvars: project_id, bot_service_account_email, zone
 terraform init
 terraform plan
 terraform apply
 ```
+This creates: the BigQuery dataset, `faq_embeddings` table, `query_logs`
+table, `feedback` table, three dashboard views, `query_logs_with_feedback`
+view, the VM (no public IP), its persistent data disk, the IAP-only SSH
+firewall rule, and Cloud NAT (required for the VM's outbound internet
+access — `apt`/`pip`/`git` all need this, since the VM has no public IP).
 
-### 3. Grant the service account access (manual)
-
-Two roles are needed — one project-level, one dataset-level:
-
+### Grant IAM roles (manual, by design)
 ```bash
-# Project-level: required for running BigQuery query jobs at all
 gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
   --member="serviceAccount:faq-bot-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
   --role="roles/bigquery.jobUser"
 
-# Dataset-level: scoped to just this dataset, not project-wide
 bq add-iam-policy-binding \
   --member="serviceAccount:faq-bot-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
   --role="roles/bigquery.dataEditor" \
   YOUR_PROJECT_ID:faq_bot
 ```
 
-Skip either grant if the account already has it (or a broader role like
-`roles/editor`) from other uses in this project — check **IAM & Admin →
-IAM** first.
-
-### 4. Get your credentials out of state
-
+### Get the service account key
 ```bash
 terraform output -raw service_account_key_base64 | base64 -d > ../faq-bot-key.json
 ```
-⚠️ This key resource writes private key material into Terraform state.
-Treat `terraform.tfstate` as a secret from this point on — don't commit it,
-and use a remote backend (see the commented-out `backend "gcs"` block in
-`versions.tf`) rather than leaving it on a laptop. If you already have a
-key for this account from its other uses, or would rather avoid Terraform
-handling key material at all, delete the `google_service_account_key`
-resource from `main.tf` and create the key manually instead:
+⚠️ This writes key material into Terraform state — treat `terraform.tfstate`
+as a secret (remote backend recommended, never commit it).
+
+### SSH into the VM and set up the environment
 ```bash
-gcloud iam service-accounts keys create faq-bot-key.json \
-  --iam-account=faq-bot-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com
+$(terraform output -raw ssh_command)   # IAP tunnel, no public IP needed
+sudo apt update && sudo apt install -y python3 python3-venv git   # needs Cloud NAT from 4.3
+sudo mkdir -p /opt/whatsapp-faq-bot && sudo chown $USER:$USER /opt/whatsapp-faq-bot
+git clone https://github.com/lauosgom/llamatel-crisis-lifeline-chatbot.git /opt/whatsapp-faq-bot
 ```
 
-### 5. Deploy the bot onto the VM
-
+### Copy secrets onto the VM (not tracked by git)
+From your local machine:
 ```bash
-# SSH in (no public IP, so this tunnels through IAP)
-$(terraform output -raw ssh_command)
-
-# From your machine, in a separate terminal, copy the project files over:
-gcloud compute scp --recurse --zone=<your-zone> \
-  ../*.py ../*.json ../requirements.txt ../.env.example faq-bot-key.json \
-  <vm-name>:/opt/whatsapp-faq-bot/ --tunnel-through-iap
+gcloud compute scp .env faq-bot-key.json \
+  <vm-name>:/opt/whatsapp-faq-bot/whatsapp_chatbot/ --zone=<zone> --tunnel-through-iap
 ```
-
-Then, on the VM:
-```bash
-cd /opt/whatsapp-faq-bot
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-
-cp .env.example .env
-nano .env   # fill in OPENAI_API_KEY, GCP_PROJECT_ID, etc. - see below
-```
-
-Set these values in `.env`:
-```bash
+Set `.env` values, with **absolute paths** (relative paths broke things
+more than once during setup — see section 8):
+```dotenv
 OPENAI_API_KEY=sk-...
-GCP_PROJECT_ID=<your-project-id>
-BQ_DATASET_ID=faq_bot                                  # optional, this is the default
-BQ_TABLE_ID=faq_embeddings                             # optional, this is the default
-GOOGLE_APPLICATION_CREDENTIALS=/opt/whatsapp-faq-bot/faq-bot-key.json
-NEONIZE_DB_PATH=/mnt/bot-data/neonize.db               # the persistent disk Terraform attached
+GCP_PROJECT_ID=your-project-id
+BQ_DATASET_ID=faq_bot
+BQ_TABLE_ID=faq_embeddings
+BQ_QUERY_LOG_TABLE_ID=query_logs
+BQ_FEEDBACK_TABLE_ID=feedback
+GOOGLE_APPLICATION_CREDENTIALS=/opt/whatsapp-faq-bot/whatsapp_chatbot/faq-bot-key.json
+NEONIZE_DB_PATH=/mnt/bot-data/neonize.db
 ```
 
-Then run it:
+### Python environment
 ```bash
-python build_index.py         # loads faq_data.json into BigQuery
-python whatsapp_bot.py         # scan the QR code - first run only, do this interactively
+cd /opt/whatsapp-faq-bot/whatsapp_chatbot   # actual code lives one level nested
+python3 -m venv /opt/whatsapp-faq-bot/venv
+source /opt/whatsapp-faq-bot/venv/bin/activate
+pip install -r requirements.txt
 ```
 
-### 6. Run it as a service
+### Build the FAQ index
+If your FAQ source is a CSV: `python csv_to_faq_json.py your_faqs.csv`
+first, to produce `faq_data.json`. Then:
+```bash
+python build_index.py
+```
+Sanity-check before touching WhatsApp at all:
+```bash
+python rag.py "¿Qué es el Teléfono de la Esperanza?"
+```
 
-Once you've scanned the QR code once and confirmed it connects, wire it up
-as a systemd service so it survives reboots and restarts on crash. A
-starter unit file is at `terraform/whatsapp-faq-bot.service` — it already
-points at `/opt/whatsapp-faq-bot/.env` as its `EnvironmentFile`, so the
-`.env` you just created is reused directly, no extra setup needed:
+### Find your group's JID and restrict the bot to it
+```bash
+python find_group_jid.py
+```
+You will find something like this:
+```bash
+Group Id llamatel
+'LlamaTel test'                          -> User: "123456584582445484"
+```
+Copy the resulting JID into `ALLOWED_GROUP_JIDS` in `whatsapp_bot.py`. Replace set() for:
+```bash
+{"123456584582445484g.us"}
+```
+### First run (interactive QR scan)
+```bash
+python whatsapp_bot.py
+```
+Scan with your secondary WhatsApp number. Confirm a test question in the
+group gets answered, then `Ctrl+C`.
+
+### Install as a systemd service
+Edit `terraform/whatsapp-faq-bot.service` — confirm `WorkingDirectory`,
+`ExecStart`, `EnvironmentFile` paths match your actual layout, and set
+`User` to a real account (`whoami` to check).
 ```bash
 sudo cp whatsapp-faq-bot.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now whatsapp-faq-bot
+sudo systemctl status whatsapp-faq-bot
 ```
+Verify it survives disconnect: close your SSH session, wait a minute,
+reconnect, send a test message.
 
 ## Evaluation
 
-it's single-vector semantic search. Each FAQ entry becomes exactly one embedding ("Q: {question}\nA: {answer}", embedded as one string) and BigQuery's VECTOR_SEARCH does nearest-neighbor lookup against that one vector. There's no separate "question relevance score" and "answer relevance score" to weight against each other — it's already collapsed into a single number (cosine distance) before boosting could even apply.
+The FAQ set is small, so evaluation uses an LLM-generated synthetic
+ground truth rather than hand-written test questions.
 
-The real design choice you do have control over is what text gets embedded, not how it's weighted after the fact. A few options:
-
-Combined Q+A (what you have now) — the answer's wording gets folded into the vector, which can help or hurt depending on whether the answer text pulls the vector toward or away from how people actually phrase questions.
-Question-only embedding — since incoming user queries are themselves questions, matching question-to-question semantically is often the strongest signal. This is a common finding in FAQ retrieval specifically: embedding just the question, and treating the answer as pure retrieved payload (never embedded), frequently outperforms combined text.
-
-1. Build the combined-text table
-```bash
-python build_index.py --embedding-mode combined --table-id faq_embeddings_combined
-```
-
-2. Build the question-only variant, into a separate table
-```bash
-python build_index.py --embedding-mode question_only --table-id faq_embeddings_qonly
-```
-
-3. Make sure you have ground truth
+### Generate ground truth
 ```bash
 python generate_ground_truth.py
 ```
+Writes `data/ground-truth-retrieval.csv` — for each FAQ entry, a few
+realistic paraphrased questions a real person might ask (deliberately
+avoiding first-person crisis disclosures as test data, given the domain).
+**Read the generated questions before trusting them** — the script prints
+a sample; check for repetitive patterns (an earlier run fell into
+prefacing every second question with "Espera," — the prompt now
+explicitly forbids that, but LLM output in a sensitive domain deserves a
+human pass regardless).
 
-4. Evaluate both tables against the same ground truth
+### Run retrieval evaluation
 ```bash
-python evaluation/evaluate.py --table-id faq_embeddings_combined
-python evaluation/evaluate.py --table-id faq_embeddings_qonly
+python evaluate.py
 ```
+Reports `hit_rate` (did the correct FAQ entry appear in the top-k
+results) and `mrr` (mean reciprocal rank — how highly it was ranked when
+found), following the standard llm-zoomcamp evaluation pattern.
+
+### A/B test embedding strategies
+```bash
+python build_index.py --embedding-mode combined --table-id faq_embeddings_combined
+python build_index.py --embedding-mode question_only --table-id faq_embeddings_qonly
+python evaluate.py --table-id faq_embeddings_combined
+python evaluate.py --table-id faq_embeddings_qonly
+```
+Point `.env`'s `BQ_TABLE_ID` at whichever wins, then delete the losing
+table (`bq rm -t ...`) so it doesn't linger untracked.
+
 
 **Results** 
 Evaluated 122 questions (top_k=3, table=faq_bot.faq_embeddings_combined): 
@@ -363,6 +289,55 @@ hit_rate: 0.992. The correct FAQ entry showed up somewhere in the top-3 results 
 mrr: 0.956. When it did find the right entry, it was almost always ranked #1 (MRR this close to the hit rate means hits are rarely happening at rank 2 or 3 they're landing right at the top).
 
 Compare that to question-only: 0.926/0.895 is still good, but missing roughly 9 questions instead of 1, and with more of its correct hits buried at rank 2-3 rather than rank 1.
+
+More details and how to run the evaluation framework in evaluation/README.md
+
+## Feedback workflow
+
+Two complementary sources of signal on answer quality:
+
+### Group reactions
+Group members react 👍/✅ (good) or 👎/❌ (bad) directly on a bot reply.
+Handled automatically in `whatsapp_bot.py`'s `handle_reaction` — no
+action needed, it's live once the bot is running.
+
+### Admin review
+```bash
+python review_logs.py
+```
+Walks through answered questions with no admin rating yet:
+`g`/`b`/`s`/`q` to rate good, bad (with an optional note), skip, or quit.
+Re-running only shows what's new since your last pass.
+
+Both write to the same `feedback` table (`source`: `"reaction"` or
+`"admin"`), joinable via `query_logs_with_feedback`.
+
+## Generating and ingesting FAQ data
+
+The enrichment loop, end to end:
+
+1. **Find gaps** — query unanswered questions directly, or use the
+   `query_logs_daily_stats`/`query_logs_top_faqs` views in Looker Studio:
+   ```sql
+   SELECT question, distance, timestamp
+   FROM `YOUR_PROJECT_ID.faq_bot.query_logs`
+   WHERE responded = FALSE
+   ORDER BY timestamp DESC;
+   ```
+2. **Update the source data** — add new entries to `faq_data.json`
+   (or edit the source CSV and re-run `csv_to_faq_json.py`).
+3. **Rebuild the index**:
+   ```bash
+   python build_index.py
+   ```
+   This truncates and reloads the table — safe to re-run any time the
+   FAQ doc changes.
+4. **Re-evaluate** (section 5) to confirm the new entries don't hurt
+   retrieval quality for existing questions.
+5. **Deploy**: `git add faq_data.json && git commit && git push`, then on
+   the VM: `git pull && python build_index.py` (index rebuild doesn't
+   need a bot restart — it's a separate BigQuery write, not something the
+   running process caches).
 
 ## Notes
 
