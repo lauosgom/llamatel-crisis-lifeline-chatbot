@@ -59,9 +59,9 @@ FEEDBACK_SCHEMA = [
 # silent rather than guessing. COSINE distance ranges 0 (identical) to 2
 # (opposite) — LOWER = more similar. Tune against real questions from your
 # group (print the distance in retrieve() while testing).
-DISTANCE_THRESHOLD = 0.25
+DISTANCE_THRESHOLD = 0.6
 
-TOP_K = 3
+TOP_K = 5
 
 SYSTEM_PROMPT = (
     "You are a helpful FAQ assistant for a WhatsApp group. "
