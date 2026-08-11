@@ -348,6 +348,10 @@ A very preliminary dashboard can be found here. It has some basic metrics to sho
 
 Go to https://datastudio.google.com/s/uLkC-0V2mis
 
+Also, here is an example of the Whatsapp group functioning. Questions are asked and the bot is using the information in the faq to respond. The user can give feedback by reacting to the message with a thumbs up or down and this is registered in the monitoring tables in BigQuery.
+
+![Whatsapp Screenshot](assets/whatsapp.png)
+
 ## Notes
 
 - Neonize session data lives in `./neonize.db` — deleting it will require
